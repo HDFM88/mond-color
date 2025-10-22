@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mond Color Harmony App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* HINTERGRUND nach unserer Mond Color Harmony */
+        body {
+            font-family: 'Inter', sans-serif;
+            /* Tiefdunkler Hintergrund #0F0F0F */
+            background-color: #0F0F0F; 
+        }
+        /* Grundstil für die Haupt-App-Karte */
+        .app-card {
+            /* Dunkelgrau mit leichter Transparenz für den luxuriösen Look */
+            background-color: rgba(30, 30, 30, 0.95);
+            /* Subtiler Schatten */
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); 
+        }
+        /* Stil für den Lade-Spinner (Akzentfarbe #4F8BE7) */
+        .spinner {
+            border: 4px solid rgba(79, 139, 231, 0.3); /* Akzentfarbe leicht transparent */
+            border-top: 4px solid #4F8BE7; /* Akzentfarbe: Mondlicht-Blau */
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 flex items-center justify-center min-h-screen">
+    <div id="app" class="app-card w-full max-w-md rounded-xl p-6 space-y-6 text-white">
+        <h1 class="text-3xl font-extrabold text-gray-100 text-center">
+            Mood Color Harmony
+        </h1>
+        <p class="text-sm text-gray-400 text-center">
+            Finde die perfekte Farbpalette, die Deine aktuelle Stimmung widerspiegelt.
+        </p>
+        <div class="space-y-3">
+            <label for="mood-input" class="block text-sm font-medium text-gray-300 flex items-center">
+                <i data-lucide="smile" class="w-4 h-4 mr-2"></i> Deine Stimmung (z.B. Glücklich, Melancholisch, Energiegeladen)
+            </label>
+            <input type="text" id="mood-input" placeholder="Gib Deine Stimmung ein..."
+                   class="w-full p-3 border border-gray-600 bg-gray-700 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-white"
+                   value="Ruhig und Fokusiert">
+        </div>
+        <button id="generate-button"
+                class="w-full flex justify-center items-center py-3 px-4 border border-transparent text-sm font-semibold rounded-lg shadow-md text-white bg-[#4F8BE7] hover:bg-[#6A9BED] transition duration-150 ease-in-out disabled:bg-gray-500">
+            <span id="button-text">Farbpalette generieren</span>
+            <div id="spinner" class="spinner hidden ml-3"></div>
+        </button>
+        <div id="result-container" class="space-y-4">
+            <h2 id="palette-title" class="text-lg font-bold text-gray-200 hidden">Deine Palette:</h2>
+            <div id="palette-display" class="grid grid-cols-7 gap-1 rounded-lg overflow-hidden">
+                </div>
+            <div id="description" class="p-3 bg-gray-700 border-l-4 border-[#4F8BE7] text-sm text-gray-300 rounded-r-lg hidden">
+                </div>
+        </div>
+        <div id="message-box" class="hidden p-3 text-sm rounded-lg bg-red-800 text-red-200 border border-red-700">
+            </div>
+    </div>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+
+        // --- Globale Variablen und Konstanten ---
+        const API_KEY = ""; // Die API-Schlüssel wird automatisch bereitgestellt
+        const API_URL = https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY};
+
+        // Firebase Konfiguration und Initialisierung
+        const firebaseConfig = typeof _firebase_config !== 'undefined' ? JSON.parse(_firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let db;
+        let auth;
+        let userId = 'anon'; 
+
+        // --- DOM-Elemente ---
+        const moodInput = document.getElementById('mood-input');
+        const generateButton = document.getElementById('generate-button');
+        const buttonText = document.getElementById('button-text');
+        const spinner = document.getElementById('spinner');
+        const paletteDisplay = document.getElementById('palette-display');
+        const descriptionEl = document.getElementById('description');
+        const paletteTitle = document.getElementById('palette-title');
+        const messageBox = document.getElementById('message-box');
+
+        /**
+         * Zeigt eine Nachricht in der Nachrichten-Box an.
+         */
+        function showMessage(message, type = 'error') {
+            messageBox.textContent = message;
+            if (type === 'error') {
+                 // Rotes Design für Fehler
+                messageBox.className = 'p-3 text-sm rounded-lg border bg-red-800 text-red-200 border-red-700';
+            } else {
+                // Grünes Design für Infos
+                messageBox.className = 'p-3 text-sm rounded-lg border bg-green-800 text-green-200 border-green-700';
+            }
+            messageBox.classList.remove('hidden');
+        }
+
+        /**
+         * Versteckt die Nachrichten-Box.
+         */
+        function hideMessage() {
+            messageBox.classList.add('hidden');
+        }
+
+        /**
+         * Schaltet den Ladezustand des Buttons um.
+         */
+        function setLoading(isLoading) {
+            generateButton.disabled = isLoading;
+            if (isLoading) {
+                buttonText.textContent = 'Generiere...';
+                spinner.classList.remove('hidden');
+                hideMessage();
+            } else {
+                buttonText.textContent = 'Farbpalette generieren';
+                spinner.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Zeigt die generierte Farbpalette und Beschreibung an.
+         */
+        function renderResult(data) {
+            paletteDisplay.innerHTML = '';
+            descriptionEl.classList.add('hidden');
+            paletteTitle.classList.add('hidden');
+            if (data && data.palette && data.palette.length > 0) {
+                paletteTitle.classList.remove('hidden');
+                data.palette.forEach(color => {
+                    const colorBlock = document.createElement('div');
+                    colorBlock.className = 'flex flex-col items-center justify-center p-1 h-16 rounded-lg shadow-inner cursor-pointer transition duration-150 ease-in-out transform hover:scale-105';
+                    colorBlock.style.backgroundColor = color.hex;
+                    colorBlock.title = Klicken, um ${color.hex} zu kopieren;
+
+                    const hexText = document.createElement('span');
+                    // Stellt sicher, dass die Textfarbe lesbar ist
+                    const isLight = (parseInt(color.hex.substring(1, 3), 16) * 0.299 +
+                                      parseInt(color.hex.substring(3, 5), 16) * 0.587 +
+                                      parseInt(color.hex.substring(5, 7), 16) * 0.114) > 186;
+                    
+                    hexText.className = text-[10px] font-semibold mt-auto ${isLight ? 'text-gray-800' : 'text-white'};
+                    hexText.textContent = color.hex;
+                                        
+                    colorBlock.appendChild(hexText);
+                                        
+                    // Klick-Handler zum Kopieren
+                    colorBlock.addEventListener('click', () => copyToClipboard(color.hex));
+                                        
+                    paletteDisplay.appendChild(colorBlock);
+                });
+
+                // Füge die Beschreibung hinzu
+                if (data.description) {
+                    descriptionEl.textContent = data.description;
+                    descriptionEl.classList.remove('hidden');
+                }
+            } else {
+                showMessage("Fehler: Das Modell hat keine gültige Farbpalette zurückgegeben.", 'error');
+            }
+        }
+
+        /**
+         * Kopiert den Text in die Zwischenablage.
+         */
+        function copyToClipboard(text) {
+            try {
+                // Ein temporäres Textfeld erstellen
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                showMessage(Farbe ${text} in die Zwischenablage kopiert!, 'info');
+            } catch (err) {
+                showMessage('Fehler beim Kopieren in die Zwischenablage.', 'error');
+            }
+        }
+
+        /**
+         * Führt den Aufruf der Gemini API durch, um die Farbpalette zu generieren.
+         */
+        async function generateColorPalette() {
+            const mood = moodInput.value.trim();
+            if (!mood) {
+                showMessage("Bitte gib eine Stimmung ein, bevor Du generierst.", 'error');
+                return;
+            }
+            setLoading(true);
+
+            // Systemanweisung für 7 Farben, die wir festgelegt haben
+            const systemInstruction = Du bist ein Farbpsychologie-Experte. Analysiere die gegebene Stimmung und generiere eine harmonische 7-Farb-Palette in Hex-Codes, die diese Stimmung perfekt widerspiegelt. Du musst eine kurze, ansprechende Beschreibung (maximal 2 Sätze) für die Palette liefern. Deine Antwort MUSS einem strikten JSON-Schema folgen.;
+                        
+            const userQuery = Meine aktuelle Stimmung ist: "${mood}". Generiere eine passende Farbpalette und eine Beschreibung dafür.;
+
+            const responseSchema = {
+                type: "OBJECT",
+                properties: {
+                    description: {
+                        type: "STRING",
+                        description: "Eine kurze, ansprechende Beschreibung der generierten Farbpalette (max. 2 Sätze)."
+                    },
+                    palette: {
+                        type: "ARRAY",
+                        description: "Eine harmonische Farbpalette, bestehend aus 7 Hex-Farb-Codes (einschließlich #).",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                hex: {
+                                    type: "STRING",
+                                    description: "Der Hex-Code der Farbe (z.B. #A3B18A)"
+                                }
+                            },
+                            required: ["hex"]
+                        }
+                    }
+                },
+                required: ["description", "palette"]
+            };
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: responseSchema
+                },
+            };
+
+            const maxRetries = 3;
+            let currentRetry = 0;
+            while (currentRetry < maxRetries) {
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        if (response.status === 429 && currentRetry < maxRetries - 1) {
+                            const delay = Math.pow(2, currentRetry) * 1000;
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            currentRetry++;
+                            continue; 
+                        }
+                        throw new Error(API-Fehler: Status ${response.status});
+                    }
+
+                    const result = await response.json();
+                    
+                    const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (!jsonText) {
+                        throw new Error("Das Modell hat keinen lesbaren Inhalt zurückgegeben.");
+                    }
+
+                    const parsedData = JSON.parse(jsonText);
+                    renderResult(parsedData);
+                    hideMessage();
+                    break; 
+
+                } catch (error) {
+                    console.error("Fehler beim Abrufen der Farbpalette:", error);
+                    if (currentRetry === maxRetries - 1) {
+                        showMessage(Konnte die Palette nicht generieren: ${error.message}. Bitte versuche es später noch einmal., 'error');
+                    }
+                    currentRetry++;
+                }
+            }
+            setLoading(false);
+        }
+
+        /**
+         * Initialisiert Firebase und die Authentifizierung.
+         */
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                                
+                console.log(Firebase initialisiert. User ID: ${userId});
+            } catch (error) {
+                console.error("Firebase Initialisierungsfehler (Dies ist oft in der Entwicklung normal):", error);
+            }
+        }
+
+        // --- Event Listener und Initialisierung ---
+        initFirebase();
+        generateButton.addEventListener('click', generateColorPalette);
+        
+        window.onload = function() {
+            lucide.createIcons();
+            // Starte die erste Generierung mit dem Standardwert
+            generateColorPalette();
+        };
+    </script>
+</body>
+</html>
